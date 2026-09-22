@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Headline Testing
  * Description: A/B headline tests with engagement tracking, reports, and automatic winners.
- * Version: 1.0.0
+ * Version: 1.0.1
  * Author: Mark Fenske
  * Update URI: https://github.com/markfenske84/headline-testing
  * Text Domain: headline-testing
@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'AHT_VERSION', '1.0.0' );
+define( 'AHT_VERSION', '1.0.1' );
 define( 'AHT_PLUGIN_FILE', __FILE__ );
 define( 'AHT_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'AHT_PLUGIN_URL', plugin_dir_url( __FILE__ ) );

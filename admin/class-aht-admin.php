@@ -29,6 +29,7 @@ class AHT_Admin {
 		add_filter( 'manage_page_posts_columns', array( __CLASS__, 'posts_column' ) );
 		add_action( 'manage_post_posts_custom_column', array( __CLASS__, 'posts_column_content' ), 10, 2 );
 		add_action( 'manage_page_posts_custom_column', array( __CLASS__, 'posts_column_content' ), 10, 2 );
+		add_action( 'admin_notices', array( __CLASS__, 'render_query_notices' ) );
 	}
 
 	/**
@@ -172,28 +173,66 @@ class AHT_Admin {
 			</tr>
 		</table>
 		<input type="hidden" name="aht_test_id" value="<?php echo esc_attr( (int) $test->id ); ?>" />
-		<p><? esc_html_e( 'Update the post to save draft settings, then start the test from the link below.', 'andreian-headline-testing' ); ?></p>
-		<?php
-		$start_url = wp_nonce_url(
-			admin_url( 'admin-post.php?action=aht_start_test&test_id=' . (int) $test->id . '&post_id=' . (int) $test->post_id ),
-			self::NONCE
-		);
-		echo '<p><a class="button button-primary" href="' . esc_url( $start_url ) . '">' . esc_html__( 'Start test', 'andreian-headline-testing' ) . '</a></p>';
-		?>
+		<p><? esc_html_e( 'Update the post to save draft settings, or use Start test to save variations and begin immediately.', 'andreian-headline-testing' ); ?></p>
+		<p>
+			<button type="button" class="button button-primary" id="aht-start-test-btn" data-test-id="<?php echo esc_attr( (int) $test->id ); ?>" data-post-id="<?php echo esc_attr( (int) $test->post_id ); ?>">
+				<?php esc_html_e( 'Start test', 'andreian-headline-testing' ); ?>
+			</button>
+		</p>
 		<script>
 		(function () {
 			var btn = document.getElementById('aht-add-variation');
 			var wrap = document.getElementById('aht-variations');
-			if (!btn || !wrap) return;
-			btn.addEventListener('click', function () {
-				var p = document.createElement('p');
-				var input = document.createElement('input');
-				input.type = 'text';
-				input.className = 'widefat';
-				input.name = 'aht_variants[]';
-				input.placeholder = <?php echo wp_json_encode( __( 'Headline variation', 'andreian-headline-testing' ) ); ?>;
-				p.appendChild(input);
-				wrap.appendChild(p);
+			if (btn && wrap) {
+				btn.addEventListener('click', function () {
+					var p = document.createElement('p');
+					var input = document.createElement('input');
+					input.type = 'text';
+					input.className = 'widefat';
+					input.name = 'aht_variants[]';
+					input.placeholder = <?php echo wp_json_encode( __( 'Headline variation', 'andreian-headline-testing' ) ); ?>;
+					p.appendChild(input);
+					wrap.appendChild(p);
+				});
+			}
+
+			var startBtn = document.getElementById('aht-start-test-btn');
+			var metaBox = document.getElementById('aht-headline-test');
+			if (!startBtn || !metaBox) {
+				return;
+			}
+
+			startBtn.addEventListener('click', function () {
+				var form = document.createElement('form');
+				form.method = 'post';
+				form.action = <?php echo wp_json_encode( admin_url( 'admin-post.php' ) ); ?>;
+
+				function addField(name, value) {
+					var input = document.createElement('input');
+					input.type = 'hidden';
+					input.name = name;
+					input.value = value;
+					form.appendChild(input);
+				}
+
+				addField('action', 'aht_start_test');
+				addField('_wpnonce', <?php echo wp_json_encode( wp_create_nonce( self::NONCE ) ); ?>);
+				addField('test_id', startBtn.getAttribute('data-test-id'));
+				addField('post_id', startBtn.getAttribute('data-post-id'));
+
+				metaBox.querySelectorAll('input[name="aht_variants[]"]').forEach(function (el) {
+					addField('aht_variants[]', el.value);
+				});
+
+				['aht_scroll_threshold', 'aht_time_threshold', 'aht_min_impressions', 'aht_confidence_level', 'aht_min_lift'].forEach(function (name) {
+					var el = metaBox.querySelector('input[name="' + name + '"]');
+					if (el) {
+						addField(name, el.value);
+					}
+				});
+
+				document.body.appendChild(form);
+				form.submit();
 			});
 		})();
 		</script>
@@ -281,9 +320,25 @@ class AHT_Admin {
 			return;
 		}
 
+		self::persist_draft_from_post( $test_id, (int) $post_id );
+	}
+
+	/**
+	 * Save draft test settings from POST (post save or start-test action).
+	 *
+	 * @param int $test_id Test ID.
+	 * @param int $post_id Post ID.
+	 * @return bool
+	 */
+	protected static function persist_draft_from_post( $test_id, $post_id ) {
+		$test = AHT_Test_Repository::get_test( $test_id );
+		if ( ! $test || (int) $test->post_id !== (int) $post_id || AHT_Test_Repository::STATUS_DRAFT !== $test->status ) {
+			return false;
+		}
+
 		$variants = isset( $_POST['aht_variants'] ) ? (array) wp_unslash( $_POST['aht_variants'] ) : array();
 
-		AHT_Test_Repository::save_test(
+		return AHT_Test_Repository::save_test(
 			$test_id,
 			array(
 				'scroll_threshold' => isset( $_POST['aht_scroll_threshold'] ) ? (float) wp_unslash( $_POST['aht_scroll_threshold'] ) : 30,
@@ -293,6 +348,37 @@ class AHT_Admin {
 				'min_lift'         => isset( $_POST['aht_min_lift'] ) ? (float) wp_unslash( $_POST['aht_min_lift'] ) : 5,
 				'variants'         => array_map( 'sanitize_text_field', $variants ),
 			)
+		);
+	}
+
+	/**
+	 * Notices after redirect from admin-post actions.
+	 */
+	public static function render_query_notices() {
+		if ( empty( $_GET['aht_notice'] ) ) {
+			return;
+		}
+
+		$code = sanitize_key( wp_unslash( $_GET['aht_notice'] ) );
+		$map  = array(
+			'started'               => array( 'success', __( 'Headline test started.', 'andreian-headline-testing' ) ),
+			'created'               => array( 'success', __( 'Headline test draft created.', 'andreian-headline-testing' ) ),
+			'cancelled'             => array( 'info', __( 'Headline test stopped.', 'andreian-headline-testing' ) ),
+			'completed'             => array( 'success', __( 'Headline test completed.', 'andreian-headline-testing' ) ),
+			'error_aht_no_variants' => array( 'error', __( 'Add at least one headline variation before starting the test.', 'andreian-headline-testing' ) ),
+			'error_aht_invalid'     => array( 'error', __( 'This test cannot be started.', 'andreian-headline-testing' ) ),
+			'error_aht_running'     => array( 'error', __( 'Another headline test is already running for this post.', 'andreian-headline-testing' ) ),
+		);
+
+		if ( ! isset( $map[ $code ] ) ) {
+			return;
+		}
+
+		list( $type, $message ) = $map[ $code ];
+		printf(
+			'<div class="notice notice-%1$s is-dismissible"><p>%2$s</p></div>',
+			esc_attr( $type ),
+			esc_html( $message )
 		);
 	}
 
@@ -322,13 +408,16 @@ class AHT_Admin {
 	}
 
 	public static function handle_start_test() {
-		if ( ! self::can_manage() || empty( $_GET['test_id'] ) ) {
+		$test_id = isset( $_REQUEST['test_id'] ) ? (int) $_REQUEST['test_id'] : 0;
+		$post_id = isset( $_REQUEST['post_id'] ) ? (int) $_REQUEST['post_id'] : 0;
+		if ( ! self::can_manage() || ! $test_id ) {
 			wp_die( esc_html__( 'Forbidden', 'andreian-headline-testing' ) );
 		}
 		check_admin_referer( self::NONCE );
-		$test_id = (int) $_GET['test_id'];
-		$post_id = (int) ( $_GET['post_id'] ?? 0 );
-		$result  = AHT_Test_Repository::start_test( $test_id );
+		if ( ! empty( $_POST['aht_variants'] ) || isset( $_POST['aht_scroll_threshold'] ) ) {
+			self::persist_draft_from_post( $test_id, $post_id );
+		}
+		$result = AHT_Test_Repository::start_test( $test_id );
 		if ( is_wp_error( $result ) ) {
 			self::redirect_to_post( $post_id, 'error_' . $result->get_error_code() );
 		}
